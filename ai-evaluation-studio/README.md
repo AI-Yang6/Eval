@@ -32,11 +32,24 @@ npm run build
 npm run check
 ```
 
-`npm run check` 会依次执行 lint、单元测试和生产构建，适合作为提交前的本地检查。
+`npm run check` 会依次执行本地密钥扫描、lint、单元测试和生产构建，适合作为提交前的本地检查。密钥扫描只读取当前仓库文件，不上传任何内容。
 
 ## 数据与密钥
 
-应用数据保存在浏览器 IndexedDB 中，包含测试集、Prompt、模型配置、评估记录、知识库和备份数据。API Key 由用户在浏览器中输入，并在调用 `/api/generate`、`/api/embed`、`/api/test-connection` 时发送到本地 Next.js API route。
+应用数据保存在浏览器 IndexedDB 中，包含测试集、Prompt、模型配置、评估记录、知识库和多模态生成历史。多模态历史保存 Provider 返回的媒体 URL，不保存图片或视频二进制，Provider URL 过期后可能无法继续预览。API Key 由用户在浏览器中输入，并在调用 `/api/generate`、`/api/embed`、`/api/test-connection` 时发送到 Next.js API route。新版数据备份不会导出 Provider 或 Embedding API Key。
+
+## 模型接入
+
+内置 Provider 包含 OpenAI、Anthropic、DeepSeek、通义千问、智谱 GLM、Kimi、豆包、MiniMax、Agnes AI，以及通用 OpenAI 兼容自定义端点。
+
+接入 Agnes AI 时，在「模型」页选择 `Agnes AI`：
+
+- `Base URL` 默认使用 `https://apihub.agnes-ai.com/v1`
+- 填入 Agnes API Key
+- 在弹窗下方添加账号可用的 `Model ID`
+- 保存后即可在评估任务中选择该模型
+
+接入其他 OpenAI-compatible 网关或私有部署时，选择 `自定义 OpenAI 兼容`，手动填写 `Base URL`、API Key 和 Model ID。后端会通过 Vercel AI SDK 的 `.chat(modelId)` 调用 `/chat/completions`，不会走 OpenAI Responses API。
 
 当前设计适合个人本地使用或可信环境内运行。若部署到公网，需要重新评估：
 
@@ -89,6 +102,6 @@ src/lib/types               全局类型
 
 ## 当前限制
 
-- 评估任务由前端会话触发，刷新页面会影响内存中的取消状态。
+- 评估任务由浏览器执行，刷新、路由切换或标签页接管后会自动断点续跑；彻底关闭所有 Eval Studio 标签页时任务会暂停，并在下次打开后继续。
 - 数据默认只存在当前浏览器，清缓存或更换浏览器前应先导出备份。
 - 模型价格、可用模型和 Provider API 兼容性会变化，预设仅用于估算和快速配置。

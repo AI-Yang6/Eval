@@ -9,6 +9,8 @@ import {
   Upload,
   FileText,
   BookOpen,
+  Eye,
+  RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -33,9 +35,10 @@ import {
   deleteKnowledgeBase,
   deleteDocument,
   addDocument,
+  listDocumentChunks,
 } from "@/lib/db/knowledge";
 import { PROVIDER_LABELS } from "@/lib/model-adapters/presets";
-import type { KnowledgeBase, KBDocument } from "@/lib/types";
+import type { KnowledgeBase, KBDocument, KBChunk } from "@/lib/types";
 import { formatDate } from "@/lib/utils/format";
 
 interface Props {
@@ -58,6 +61,10 @@ export default function KnowledgeDetailPage({ params }: Props) {
   // confirm
   const [confirmDeleteKb, setConfirmDeleteKb] = useState(false);
   const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<KBDocument | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<KBDocument | null>(null);
+  const [previewChunks, setPreviewChunks] = useState<KBChunk[]>([]);
+  const [previewMode, setPreviewMode] = useState<"chunks" | "source">("chunks");
+  const [rebuilding, setRebuilding] = useState(false);
 
   useEffect(() => {
     params.then((p) => setId(p.id));
@@ -110,6 +117,46 @@ export default function KnowledgeDetailPage({ params }: Props) {
     }
   }
 
+  async function openDocumentPreview(doc: KBDocument) {
+    setPreviewDoc(doc);
+    setPreviewMode("chunks");
+    try {
+      setPreviewChunks(await listDocumentChunks(doc.id));
+    } catch (e) {
+      setPreviewChunks([]);
+      toast.error(`加载切片失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  async function handleRebuildDocument() {
+    if (!previewDoc || !id) return;
+    setRebuilding(true);
+    try {
+      const previous = previewDoc;
+      const result = await addDocument(id, previous.filename, previous.content);
+      if (result.chunkCount === 0) {
+        toast.error(`重新切片失败：${result.error || "未知错误"}`, { duration: 15_000 });
+        return;
+      }
+      await deleteDocument(previous.id);
+      const chunks = await listDocumentChunks(result.document.id);
+      setPreviewDoc(result.document);
+      setPreviewChunks(chunks);
+      await refresh();
+      if (result.error) {
+        toast.warning(`已重新生成 ${result.chunkCount} 个切片，但 ${result.error}`, {
+          duration: 15_000,
+        });
+      } else {
+        toast.success(`已重新生成 ${result.chunkCount} 个向量切片`);
+      }
+    } catch (e) {
+      toast.error(`重新切片失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRebuilding(false);
+    }
+  }
+
   async function handleUpload() {
     if (!uploadContent.trim()) {
       toast.error("文档内容不能为空");
@@ -123,7 +170,11 @@ export default function KnowledgeDetailPage({ params }: Props) {
         uploadContent
       );
       if (result.error) {
-        toast.warning(`上传完成，但 ${result.error}`);
+        if (result.chunkCount === 0) {
+          toast.error(`向量化失败：${result.error}`, { duration: 15_000 });
+          return;
+        }
+        toast.warning(`上传完成，但 ${result.error}`, { duration: 15_000 });
       } else {
         toast.success(`已上传，共 ${result.chunkCount} 个片段`);
       }
@@ -260,7 +311,7 @@ export default function KnowledgeDetailPage({ params }: Props) {
                   <th className="text-right font-medium px-4 py-2.5">字符数</th>
                   <th className="text-right font-medium px-4 py-2.5">片段数</th>
                   <th className="text-right font-medium px-4 py-2.5">上传时间</th>
-                  <th className="text-center font-medium px-4 py-2.5 w-20">操作</th>
+                  <th className="text-center font-medium px-4 py-2.5 w-28">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -270,10 +321,14 @@ export default function KnowledgeDetailPage({ params }: Props) {
                     className="border-b border-border-subtle last:border-0 hover:bg-bg-hover/40 transition-colors group"
                   >
                     <td className="px-4 py-3 text-text-primary max-w-[300px] truncate">
-                      <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void openDocumentPreview(doc)}
+                        className="flex items-center gap-2 max-w-full hover:text-primary transition-colors"
+                      >
                         <FileText className="w-3.5 h-3.5 text-text-tertiary shrink-0" />
                         <span className="truncate">{doc.filename}</span>
-                      </div>
+                      </button>
                     </td>
                     <td className="px-4 py-3 text-right text-text-secondary font-mono text-xs">
                       {doc.charCount.toLocaleString()}
@@ -285,13 +340,24 @@ export default function KnowledgeDetailPage({ params }: Props) {
                       {formatDate(doc.createdAt)}
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <button
-                        onClick={() => setConfirmDeleteDoc(doc)}
-                        className="w-7 h-7 rounded-md flex items-center justify-center text-text-tertiary hover:text-danger hover:bg-bg-hover opacity-0 group-hover:opacity-100 transition-opacity mx-auto"
-                        aria-label="删除"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          onClick={() => void openDocumentPreview(doc)}
+                          className="w-7 h-7 rounded-md flex items-center justify-center text-text-tertiary hover:text-primary hover:bg-bg-hover transition-colors"
+                          aria-label="预览"
+                          title="预览文档"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteDoc(doc)}
+                          className="w-7 h-7 rounded-md flex items-center justify-center text-text-tertiary hover:text-danger hover:bg-bg-hover opacity-0 group-hover:opacity-100 transition-opacity"
+                          aria-label="删除"
+                          title="删除文档"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -347,6 +413,83 @@ export default function KnowledgeDetailPage({ params }: Props) {
             </Button>
             <Button onClick={handleUpload} disabled={uploading || !uploadContent.trim()}>
               {uploading ? "处理中..." : "上传并向量化"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Document preview */}
+      <Dialog
+        open={!!previewDoc}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPreviewDoc(null);
+            setPreviewChunks([]);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>{previewDoc?.filename}</DialogTitle>
+            <DialogDescription>
+              {previewDoc?.charCount.toLocaleString()} 字符 · {previewDoc?.chunkCount} 个向量片段
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={previewMode === "chunks" ? "default" : "outline"}
+              onClick={() => setPreviewMode("chunks")}
+            >
+              向量切片 ({previewChunks.length})
+            </Button>
+            <Button
+              size="sm"
+              variant={previewMode === "source" ? "default" : "outline"}
+              onClick={() => setPreviewMode("source")}
+            >
+              原始文档
+            </Button>
+          </div>
+          {previewMode === "source" ? (
+            <pre className="min-h-0 max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border-subtle bg-bg-base p-4 text-sm text-text-secondary font-mono">
+              {previewDoc?.content}
+            </pre>
+          ) : previewChunks.length > 0 ? (
+            <div className="min-h-0 max-h-[60vh] overflow-auto space-y-2 pr-1">
+              {previewChunks.map((chunk) => (
+                <div
+                  key={chunk.id}
+                  className="rounded-md border border-border-subtle bg-bg-base p-3"
+                >
+                  <div className="mb-2 flex items-center justify-between text-xs text-text-tertiary">
+                    <span className="font-mono">切片 #{chunk.index + 1}</span>
+                    <span className="font-mono">
+                      {chunk.content.length} 字符 · {chunk.embedding.length} 维
+                    </span>
+                  </div>
+                  <pre className="whitespace-pre-wrap break-words text-xs text-text-secondary font-mono">
+                    {chunk.content}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed border-border-default bg-bg-base py-10 text-center text-sm text-danger">
+              该文档没有向量切片，请删除后重新上传。
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={handleRebuildDocument}
+              disabled={rebuilding}
+            >
+              <RefreshCw className={rebuilding ? "w-4 h-4 animate-spin" : "w-4 h-4"} />
+              {rebuilding ? "重新切片中..." : "重新切片并向量化"}
+            </Button>
+            <Button variant="outline" onClick={() => setPreviewDoc(null)}>
+              关闭
             </Button>
           </DialogFooter>
         </DialogContent>

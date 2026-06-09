@@ -63,7 +63,7 @@ export default function PrivacyPage() {
                 备份
               </h2>
               <p>
-                备份文件会包含本地工作台数据，可能包括模型配置和 API Key。请妥善保存备份文件，不要公开分享。
+                新版备份文件包含本地工作台数据和脱敏后的模型配置，不包含 Provider 或 Embedding API Key。旧版备份文件可能包含明文 API Key，请勿公开分享，并建议在升级后删除或安全迁移。
               </p>
             </section>
 

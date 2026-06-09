@@ -52,13 +52,22 @@ export async function updatePromptName(id: string, name: string) {
 }
 
 export async function deletePrompt(id: string): Promise<void> {
-  await getDB().transaction(
+  const db = getDB();
+  const versionIds = (await db.promptVersions.where("promptId").equals(id).toArray())
+    .map((version) => version.id);
+  const referencedRuns = await db.evalRuns
+    .filter((run) => run.promptVersionIds.some((versionId) => versionIds.includes(versionId)))
+    .count();
+  if (referencedRuns > 0) {
+    throw new Error(`该 Prompt 已被 ${referencedRuns} 个评估任务引用，不能删除`);
+  }
+  await db.transaction(
     "rw",
-    getDB().prompts,
-    getDB().promptVersions,
+    db.prompts,
+    db.promptVersions,
     async () => {
-      await getDB().promptVersions.where("promptId").equals(id).delete();
-      await getDB().prompts.delete(id);
+      await db.promptVersions.where("promptId").equals(id).delete();
+      await db.prompts.delete(id);
     }
   );
 }

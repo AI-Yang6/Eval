@@ -41,6 +41,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   MODEL_PRESETS,
+  MODEL_PROVIDERS,
   PROVIDER_LABELS,
   PROVIDER_GLYPH,
 } from "@/lib/model-adapters/presets";
@@ -53,17 +54,6 @@ import {
 } from "@/lib/db/models";
 import type { ModelConfig, ModelProvider } from "@/lib/types";
 import { cn } from "@/lib/utils";
-
-const PROVIDERS: ModelProvider[] = [
-  "openai",
-  "anthropic",
-  "deepseek",
-  "qwen",
-  "glm",
-  "kimi",
-  "doubao",
-  "minimax",
-];
 
 function maskKey(key: string): string {
   if (!key) return "";
@@ -194,7 +184,7 @@ export default function ModelsPage() {
             description="选择一个 Provider 开始配置 API Key（国产 Provider 走 OpenAI 兼容协议，可在弹窗内自定义 Base URL）"
             action={
               <div className="flex items-center gap-2 flex-wrap justify-center max-w-2xl">
-                {PROVIDERS.map((p) => (
+                {MODEL_PROVIDERS.map((p) => (
                   <Button
                     key={p}
                     variant="outline"
@@ -211,7 +201,7 @@ export default function ModelsPage() {
         </SpotlightCard>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {PROVIDERS.map((provider) => {
+          {MODEL_PROVIDERS.map((provider) => {
             const cfg = configByProvider.get(provider);
             const presets = MODEL_PRESETS[provider];
             const enabledCount = cfg
@@ -247,7 +237,11 @@ export default function ModelsPage() {
                         )}
                       </div>
                       <div className="text-xs text-text-tertiary font-mono">
-                        {cfg ? maskKey(cfg.apiKey) : `${presets.length} 个可用模型`}
+                        {cfg
+                          ? maskKey(cfg.apiKey)
+                          : presets.length > 0
+                          ? `${presets.length} 个可用模型`
+                          : "支持自定义模型"}
                       </div>
                     </div>
                   </div>
@@ -294,6 +288,11 @@ export default function ModelsPage() {
 
                 {/* Model list */}
                 <div className="border border-border-subtle rounded-md divide-y divide-border-subtle">
+                  {presets.length === 0 && !cfg && (
+                    <div className="px-3 py-4 text-xs text-text-tertiary">
+                      配置 API Key、Base URL 与 Model ID 后即可调用。
+                    </div>
+                  )}
                   {presets.map((p) => {
                     const def = cfg?.models.find((m) => m.modelId === p.modelId);
                     const enabled = def?.enabled ?? false;

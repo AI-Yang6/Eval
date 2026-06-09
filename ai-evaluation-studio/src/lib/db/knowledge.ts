@@ -2,6 +2,7 @@ import { v4 as uuid } from "uuid";
 import { getDB } from "./index";
 import { getModelConfig } from "./models";
 import { getEmbedConfig } from "./embed-config";
+import { splitIntoChunks } from "../knowledge/chunking";
 import type {
   KnowledgeBase,
   KBDocument,
@@ -60,11 +61,35 @@ export async function deleteKnowledgeBase(id: string): Promise<void> {
 export async function listDocuments(
   kbId: string
 ): Promise<KBDocument[]> {
-  return getDB()
+  const db = getDB();
+  const documents = await db
     .kbDocuments
     .where({ knowledgeBaseId: kbId })
     .reverse()
     .sortBy("createdAt");
+  const repaired = await Promise.all(
+    documents.map(async (document) => {
+      const chunkCount = await db.kbChunks
+        .where("documentId")
+        .equals(document.id)
+        .count();
+      if (document.chunkCount !== chunkCount) {
+        await db.kbDocuments.update(document.id, { chunkCount });
+      }
+      return document.chunkCount === chunkCount
+        ? document
+        : { ...document, chunkCount };
+    })
+  );
+  const totalChunks = repaired.reduce((sum, document) => sum + document.chunkCount, 0);
+  const kb = await db.knowledgeBases.get(kbId);
+  if (kb && kb.chunkCount !== totalChunks) {
+    await db.knowledgeBases.update(kbId, {
+      chunkCount: totalChunks,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+  return repaired;
 }
 
 export async function getDocument(
@@ -102,55 +127,20 @@ export async function listChunks(kbId: string): Promise<KBChunk[]> {
     .sortBy("index");
 }
 
-// ── Split text into chunks ──
-
-function splitIntoChunks(text: string): string[] {
-  const paragraphs = text
-    .split(/\n\s*\n/)
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0);
-  const MAX_CHUNK = 500;
-  const chunks: string[] = [];
-  let current = "";
-  for (const para of paragraphs) {
-    const candidate = current ? current + "\n\n" + para : para;
-    if (candidate.length > MAX_CHUNK && current.length > 0) {
-      chunks.push(current);
-      current = para;
-    } else {
-      current = candidate;
-    }
-  }
-  if (current.trim().length > 0) chunks.push(current.trim());
-  // fallback: if nothing was chunked (e.g. single giant paragraph), split by sentences
-  if (chunks.length === 0 && text.trim().length > 0) {
-    return splitByLength(text.trim(), MAX_CHUNK);
-  }
-  return chunks;
-}
-
-function splitByLength(text: string, maxLen: number): string[] {
-  const chunks: string[] = [];
-  let i = 0;
-  while (i < text.length) {
-    const end = Math.min(i + maxLen, text.length);
-    // try to break at a sentence boundary
-    let breakAt = end;
-    if (end < text.length) {
-      const nextPeriod = text.indexOf("。", i + maxLen - 50);
-      if (nextPeriod > 0 && nextPeriod < i + maxLen + 50) {
-        breakAt = nextPeriod + 1;
-      }
-    }
-    chunks.push(text.slice(i, breakAt).trim());
-    i = breakAt;
-  }
-  return chunks.filter((c) => c.length > 0);
+export async function listDocumentChunks(documentId: string): Promise<KBChunk[]> {
+  return getDB()
+    .kbChunks
+    .where("documentId")
+    .equals(documentId)
+    .sortBy("index");
 }
 
 // ── Cosine similarity ──
 
 function cosineSimilarity(a: Float64Array, b: Float64Array): number {
+  if (a.length !== b.length) {
+    throw new Error(`Embedding 维度不一致：查询 ${a.length}，知识片段 ${b.length}`);
+  }
   let dot = 0;
   let normA = 0;
   let normB = 0;
@@ -280,6 +270,8 @@ export async function addDocument(
     };
   }
 
+  doc.chunkCount = kbChunks.length;
+
   // persist
   await db.transaction(
     "rw",
@@ -299,7 +291,7 @@ export async function addDocument(
   );
 
   return {
-    document: { ...doc, chunkCount: kbChunks.length },
+    document: doc,
     chunkCount: kbChunks.length,
     ...(errors.length > 0 ? { error: `部分分块失败（${errors[0]}）` } : {}),
   };
@@ -323,7 +315,9 @@ export async function retrieveContext(
   let queryEmbedding = embedCache.get(cacheKey);
   if (!queryEmbedding) {
     const result = await embedText(provider, apiKey, baseURL, model, queryInput);
-    if (!result.embedding) return [];
+    if (!result.embedding) {
+      throw new Error(result.error || "查询文本 Embedding 失败");
+    }
     queryEmbedding = result.embedding;
     embedCache.set(cacheKey, result.embedding);
   }

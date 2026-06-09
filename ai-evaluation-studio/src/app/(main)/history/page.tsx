@@ -58,6 +58,7 @@ interface RunWithScore extends EvalRun {
   overallScore: number | null;
   promptName: string;
   modelLabels: string[];
+  trendPoints: Array<{ key: string; label: string; score: number }>;
 }
 
 const LINE_COLORS = [
@@ -99,20 +100,59 @@ export default function HistoryPage() {
           // prompt name
           let promptName = "未知";
           if (r.promptVersionIds.length > 0) {
-            const v = await getDB().promptVersions.get(r.promptVersionIds[0]);
+            const v =
+              r.snapshots?.promptVersions.find((item) => item.id === r.promptVersionIds[0]) ??
+              await getDB().promptVersions.get(r.promptVersionIds[0]);
             if (v) {
-              const p = await getDB().prompts.get(v.promptId);
+              const p =
+                r.snapshots?.prompts?.find((item) => item.id === v.promptId) ??
+                await getDB().prompts.get(v.promptId);
               promptName = p?.name ?? "未知";
             }
           }
           // model labels
           const modelLabels: string[] = [];
           for (const mid of r.modelDefIds) {
-            const m = await findModelDef(mid);
+            const m =
+              r.snapshots?.models.find((item) => item.def.id === mid) ??
+              await findModelDef(mid);
             if (m) modelLabels.push(m.def.label);
           }
 
-          return { ...r, overallScore: score, promptName, modelLabels };
+          const trendPoints: RunWithScore["trendPoints"] = [];
+          if (r.status === "completed") {
+            const results = await listResultsByRun(r.id);
+            const groups = new Map<string, { total: number; count: number }>();
+            for (const result of results) {
+              if (result.error || Object.keys(result.scores).length === 0) continue;
+              const key = `${result.promptVersionId}::${result.modelDefId}`;
+              const group = groups.get(key) ?? { total: 0, count: 0 };
+              group.total += overallScore(result.scores);
+              group.count += 1;
+              groups.set(key, group);
+            }
+            for (const [key, group] of groups) {
+              const [versionId, modelDefId] = key.split("::");
+              const version =
+                r.snapshots?.promptVersions.find((item) => item.id === versionId) ??
+                await getDB().promptVersions.get(versionId);
+              const prompt = version
+                ? r.snapshots?.prompts?.find((item) => item.id === version.promptId) ??
+                  await getDB().prompts.get(version.promptId)
+                : null;
+              const model =
+                r.snapshots?.models.find((item) => item.def.id === modelDefId) ??
+                await findModelDef(modelDefId);
+              if (!version || !model) continue;
+              trendPoints.push({
+                key,
+                label: `${prompt?.name ?? "未知"} v${version.versionNumber} · ${model.def.label}`,
+                score: group.total / group.count,
+              });
+            }
+          }
+
+          return { ...r, overallScore: score, promptName, modelLabels, trendPoints };
         })
       );
       setRuns(enriched);
@@ -166,7 +206,7 @@ export default function HistoryPage() {
   // 趋势图数据：按 prompt + model 组合分组，时间作为 x 轴
   const chartData = useMemo<{
     series: { key: string; label: string }[];
-    data: Record<string, string | number>[];
+    data: Record<string, string | number | undefined>[];
   }>(() => {
     const completed = filteredRuns.filter(
       (r) => r.overallScore !== null && r.status === "completed"
@@ -179,17 +219,17 @@ export default function HistoryPage() {
       { label: string; points: { x: string; y: number }[] }
     >();
     for (const r of completed) {
-      for (const ml of r.modelLabels) {
-        const key = `${r.promptName}::${ml}`;
+      for (const point of r.trendPoints) {
+        const key = point.key;
         if (!groups.has(key)) {
           groups.set(key, {
-            label: `${r.promptName} · ${ml}`,
+            label: point.label,
             points: [],
           });
         }
         groups.get(key)!.points.push({
-          x: formatRelativeTime(r.createdAt),
-          y: Number(r.overallScore!.toFixed(2)),
+          x: r.createdAt,
+          y: Number(point.score.toFixed(2)),
         });
       }
     }
@@ -209,10 +249,10 @@ export default function HistoryPage() {
     return {
       series: sorted.map(([key, g]) => ({ key, label: g.label })),
       data: xLabels.map((x) => {
-        const row: Record<string, number | string> = { x };
+        const row: Record<string, number | string | undefined> = { x };
         sorted.forEach(([key, g]) => {
           const pt = g.points.find((p) => p.x === x);
-          row[key] = pt ? pt.y : 0;
+          row[key] = pt?.y;
         });
         return row;
       }),
@@ -264,6 +304,7 @@ export default function HistoryPage() {
                     <CartesianGrid stroke="rgba(255,255,255,0.05)" />
                     <XAxis
                       dataKey="x"
+                      tickFormatter={(value) => formatRelativeTime(String(value))}
                       tick={{ fill: "#71717a", fontSize: 11 }}
                       stroke="rgba(255,255,255,0.05)"
                     />

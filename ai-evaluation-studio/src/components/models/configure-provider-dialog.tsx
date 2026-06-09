@@ -2,7 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Eye, EyeOff, Loader2, CheckCircle2, AlertCircle, Link as LinkIcon } from "lucide-react";
+import {
+  Eye,
+  EyeOff,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+  Link as LinkIcon,
+  Plus,
+  X,
+} from "lucide-react";
 
 import {
   Dialog,
@@ -23,6 +32,7 @@ import {
   PROVIDER_LABELS,
   PROVIDER_DEFAULT_BASE_URL,
   PROVIDER_KEY_PLACEHOLDER,
+  normalizeProviderBaseURL,
 } from "@/lib/model-adapters/presets";
 import { upsertModelConfig, getModelConfig } from "@/lib/db/models";
 import type { ModelProvider } from "@/lib/types";
@@ -52,6 +62,20 @@ export function ConfigureProviderDialog({
   const [baseURL, setBaseURL] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [enabledIds, setEnabledIds] = useState<Set<string>>(new Set());
+  const [customModels, setCustomModels] = useState<
+    Array<{
+      modelId: string;
+      label: string;
+      inputPricePer1k: number;
+      outputPricePer1k: number;
+    }>
+  >([]);
+  const [customDraft, setCustomDraft] = useState({
+    modelId: "",
+    label: "",
+    inputPricePer1k: "0",
+    outputPricePer1k: "0",
+  });
   const [test, setTest] = useState<TestState>({ status: "idle" });
   const [saving, setSaving] = useState(false);
 
@@ -68,11 +92,28 @@ export function ConfigureProviderDialog({
         setEnabledIds(
           new Set(cfg.models.filter((m) => m.enabled).map((m) => m.modelId))
         );
+        setCustomModels(
+          cfg.models
+            .filter((m) => m.isCustom)
+            .map((m) => ({
+              modelId: m.modelId,
+              label: m.label,
+              inputPricePer1k: m.inputPricePer1k,
+              outputPricePer1k: m.outputPricePer1k,
+            }))
+        );
       } else {
         setApiKey("");
         setBaseURL("");
         setEnabledIds(new Set(presets.map((p) => p.modelId)));
+        setCustomModels([]);
       }
+      setCustomDraft({
+        modelId: "",
+        label: "",
+        inputPricePer1k: "0",
+        outputPricePer1k: "0",
+      });
       setTest({ status: "idle" });
       setShowKey(false);
     })();
@@ -80,6 +121,59 @@ export function ConfigureProviderDialog({
       active = false;
     };
   }, [open, provider, presets]);
+
+  function handleAddCustomModel() {
+    const modelId = customDraft.modelId.trim();
+    if (!modelId) {
+      toast.error("Model ID 不能为空");
+      return;
+    }
+    if (
+      presets.some((p) => p.modelId === modelId) ||
+      customModels.some((m) => m.modelId === modelId)
+    ) {
+      toast.error(`模型 "${modelId}" 已存在`);
+      return;
+    }
+    const inputPricePer1k = Number(customDraft.inputPricePer1k);
+    const outputPricePer1k = Number(customDraft.outputPricePer1k);
+    if (
+      Number.isNaN(inputPricePer1k) ||
+      Number.isNaN(outputPricePer1k) ||
+      inputPricePer1k < 0 ||
+      outputPricePer1k < 0
+    ) {
+      toast.error("价格必须是非负数字");
+      return;
+    }
+    setCustomModels((prev) => [
+      ...prev,
+      {
+        modelId,
+        label: customDraft.label.trim() || modelId,
+        inputPricePer1k,
+        outputPricePer1k,
+      },
+    ]);
+    setEnabledIds((prev) => new Set(prev).add(modelId));
+    setCustomDraft({
+      modelId: "",
+      label: "",
+      inputPricePer1k: "0",
+      outputPricePer1k: "0",
+    });
+    setTest({ status: "idle" });
+  }
+
+  function handleRemoveCustomModel(modelId: string) {
+    setCustomModels((prev) => prev.filter((m) => m.modelId !== modelId));
+    setEnabledIds((prev) => {
+      const next = new Set(prev);
+      next.delete(modelId);
+      return next;
+    });
+    setTest({ status: "idle" });
+  }
 
   function toggleModel(modelId: string) {
     setEnabledIds((prev) => {
@@ -95,15 +189,29 @@ export function ConfigureProviderDialog({
       toast.error("请先填写 API Key");
       return;
     }
+    if (provider === "custom" && !baseURL.trim()) {
+      toast.error("自定义 Provider 必须填写 Base URL");
+      return;
+    }
     setTest({ status: "testing" });
     try {
+      const firstEnabledModel =
+        [...presets, ...customModels].find((m) => enabledIds.has(m.modelId))
+          ?.modelId ||
+        customDraft.modelId.trim() ||
+        customModels[0]?.modelId;
+      const finalBaseURL = normalizeProviderBaseURL(
+        provider,
+        baseURL.trim() || undefined
+      );
       const res = await fetch("/api/test-connection", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           provider,
           apiKey: apiKey.trim(),
-          baseURL: baseURL.trim() || undefined,
+          baseURL: finalBaseURL,
+          modelId: firstEnabledModel,
         }),
       });
       const data = await res.json();
@@ -125,17 +233,56 @@ export function ConfigureProviderDialog({
       toast.error("API Key 不能为空");
       return;
     }
-    if (enabledIds.size === 0) {
+    if (provider === "custom" && !baseURL.trim()) {
+      toast.error("自定义 Provider 必须填写 Base URL");
+      return;
+    }
+    const draftModelId = customDraft.modelId.trim();
+    const draftInputPrice = Number(customDraft.inputPricePer1k);
+    const draftOutputPrice = Number(customDraft.outputPricePer1k);
+    if (
+      draftModelId &&
+      (Number.isNaN(draftInputPrice) ||
+        Number.isNaN(draftOutputPrice) ||
+        draftInputPrice < 0 ||
+        draftOutputPrice < 0)
+    ) {
+      toast.error("价格必须是非负数字");
+      return;
+    }
+    const effectiveCustomModels = draftModelId
+      ? customModels.some((m) => m.modelId === draftModelId) ||
+        presets.some((p) => p.modelId === draftModelId)
+        ? customModels
+        : [
+            ...customModels,
+            {
+              modelId: draftModelId,
+              label: customDraft.label.trim() || draftModelId,
+              inputPricePer1k: draftInputPrice,
+              outputPricePer1k: draftOutputPrice,
+            },
+          ]
+      : customModels;
+    const effectiveEnabledIds = new Set(enabledIds);
+    if (draftModelId) effectiveEnabledIds.add(draftModelId);
+
+    if (effectiveEnabledIds.size === 0) {
       toast.error("至少勾选一个模型");
       return;
     }
     setSaving(true);
     try {
+      const finalBaseURL = normalizeProviderBaseURL(
+        provider,
+        baseURL.trim() || undefined
+      );
       await upsertModelConfig({
         provider,
         apiKey: apiKey.trim(),
-        baseURL: baseURL.trim() || undefined,
-        enabledModelIds: Array.from(enabledIds),
+        baseURL: finalBaseURL,
+        enabledModelIds: Array.from(effectiveEnabledIds),
+        customModels: effectiveCustomModels,
       });
       toast.success(`${PROVIDER_LABELS[provider]} 配置已保存`);
       onSaved?.();
@@ -153,7 +300,7 @@ export function ConfigureProviderDialog({
         <DialogHeader>
           <DialogTitle>配置 {PROVIDER_LABELS[provider]}</DialogTitle>
           <DialogDescription className="break-words">
-            填入 API Key 并勾选要使用的模型，所有数据仅保存在浏览器本地。
+            填入 API Key、Base URL 与模型 ID，所有数据仅保存在浏览器本地。
           </DialogDescription>
         </DialogHeader>
 
@@ -196,7 +343,7 @@ export function ConfigureProviderDialog({
                 <LinkIcon className="w-3.5 h-3.5 text-text-tertiary" />
                 Base URL
                 <span className="text-xs text-text-tertiary font-normal">
-                  （可选，留空使用默认）
+                  {provider === "custom" ? "（必填）" : "（可选，留空使用默认）"}
                 </span>
               </Label>
               <Input
@@ -253,6 +400,11 @@ export function ConfigureProviderDialog({
           <div className="flex flex-col gap-2">
             <Label>启用模型 *</Label>
             <div className="border border-border-subtle rounded-md divide-y divide-border-subtle max-h-[260px] overflow-y-auto">
+              {presets.length === 0 && customModels.length === 0 && (
+                <div className="px-3 py-4 text-xs text-text-tertiary">
+                  暂无预设模型，请在下方添加此 Provider 可用的 Model ID。
+                </div>
+              )}
               {presets.map((p) => {
                 const checked = enabledIds.has(p.modelId);
                 return (
@@ -306,11 +458,133 @@ export function ConfigureProviderDialog({
                   </button>
                 );
               })}
+              {customModels.map((p) => {
+                const checked = enabledIds.has(p.modelId);
+                return (
+                  <div key={p.modelId} className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => toggleModel(p.modelId)}
+                      className={cn(
+                        "flex-1 flex items-center gap-3 px-3 py-2.5 text-left transition-colors min-w-0",
+                        checked ? "bg-primary-muted/40" : "hover:bg-bg-hover"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors",
+                          checked
+                            ? "bg-primary border-primary"
+                            : "border-border-default"
+                        )}
+                      >
+                        {checked && (
+                          <svg
+                            viewBox="0 0 12 12"
+                            className="w-3 h-3 text-white"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                          >
+                            <path d="M2.5 6.5l2.5 2.5 4.5-5" />
+                          </svg>
+                        )}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-sm font-medium text-text-primary truncate">
+                            {p.label}
+                          </span>
+                          <Badge
+                            variant="secondary"
+                            className="bg-bg-hover text-text-tertiary border-border-subtle font-mono text-[10px] px-1.5 py-0 max-w-[160px] truncate"
+                          >
+                            {p.modelId}
+                          </Badge>
+                        </div>
+                        <div className="text-[11px] text-text-tertiary font-mono">
+                          in ${p.inputPricePer1k}/1k · out ${p.outputPricePer1k}/1k
+                        </div>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveCustomModel(p.modelId)}
+                      className="w-8 h-8 rounded flex items-center justify-center text-text-tertiary hover:text-danger hover:bg-[rgba(239,68,68,0.08)] transition-colors shrink-0 mr-1"
+                      aria-label="删除自定义模型"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
             <p className="text-xs text-text-tertiary">
               已勾选 <span className="text-primary font-medium">{enabledIds.size}</span> /{" "}
-              {presets.length} 个预设模型
+              {presets.length + customModels.length} 个模型
             </p>
+          </div>
+
+          <div className="rounded-md border border-border-subtle p-3 flex flex-col gap-3">
+            <Label>添加自定义模型</Label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <Input
+                value={customDraft.modelId}
+                onChange={(e) =>
+                  setCustomDraft((f) => ({ ...f, modelId: e.target.value }))
+                }
+                placeholder="Model ID，如 sapiens-chat"
+                className="font-mono text-xs"
+                autoComplete="off"
+              />
+              <Input
+                value={customDraft.label}
+                onChange={(e) =>
+                  setCustomDraft((f) => ({ ...f, label: e.target.value }))
+                }
+                placeholder="显示名，可选"
+                className="text-xs"
+                autoComplete="off"
+              />
+              <Input
+                type="number"
+                step="0.0001"
+                min="0"
+                value={customDraft.inputPricePer1k}
+                onChange={(e) =>
+                  setCustomDraft((f) => ({
+                    ...f,
+                    inputPricePer1k: e.target.value,
+                  }))
+                }
+                placeholder="输入价 $/1k"
+                className="font-mono text-xs"
+              />
+              <Input
+                type="number"
+                step="0.0001"
+                min="0"
+                value={customDraft.outputPricePer1k}
+                onChange={(e) =>
+                  setCustomDraft((f) => ({
+                    ...f,
+                    outputPricePer1k: e.target.value,
+                  }))
+                }
+                placeholder="输出价 $/1k"
+                className="font-mono text-xs"
+              />
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleAddCustomModel}
+              className="self-start"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              添加模型
+            </Button>
           </div>
         </div>
 

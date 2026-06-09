@@ -7,6 +7,7 @@ export interface RegressionItem {
   testCaseInput: string;
   promptVersionId: string;
   promptVersionNum: number;
+  oldPromptVersionNum: number;
   modelDefId: string;
   modelLabel: string;
   oldScore: number;
@@ -39,7 +40,7 @@ export async function checkRegression(run: EvalRun): Promise<RegressionResult> {
   const olderRuns = await db.evalRuns
     .where("createdAt")
     .below(run.createdAt)
-    .filter((r) => r.status === "completed")
+    .filter((r) => r.status === "completed" && r.testSuiteId === run.testSuiteId)
     .toArray();
   if (olderRuns.length === 0) return { fixed: [], regressed: [], total: 0 };
 
@@ -58,14 +59,27 @@ export async function checkRegression(run: EvalRun): Promise<RegressionResult> {
 
   if (olderBadResults.length === 0) return { fixed: [], regressed: [], total: 0 };
 
-  // 建立 (testCaseId::promptVersionId::modelDefId) → 旧分数 的映射
-  const oldScoreMap = new Map<string, number>();
+  const allVersionIds = new Set([
+    ...currentResults.map((r) => r.promptVersionId),
+    ...olderBadResults.map((r) => r.promptVersionId),
+  ]);
+  const allVersions = await Promise.all(
+    [...allVersionIds].map((id) => db.promptVersions.get(id))
+  );
+  const versionMap = new Map(
+    allVersions.filter(Boolean).map((version) => [version!.id, version!])
+  );
+
+  // 跨 Prompt 版本匹配同一 Prompt：testCase + promptId + model。
+  const oldScoreMap = new Map<string, { score: number; versionNumber: number }>();
   for (const r of olderBadResults) {
-    const key = `${r.testCaseId}::${r.promptVersionId}::${r.modelDefId}`;
+    const version = versionMap.get(r.promptVersionId);
+    if (!version) continue;
+    const key = `${r.testCaseId}::${version.promptId}::${r.modelDefId}`;
     const s = overallScore(r.scores);
-    if (!oldScoreMap.has(key) || s < oldScoreMap.get(key)!) {
+    if (!oldScoreMap.has(key) || s < oldScoreMap.get(key)!.score) {
       // 取最低分（最差表现）
-      oldScoreMap.set(key, s);
+      oldScoreMap.set(key, { score: s, versionNumber: version.versionNumber });
     }
   }
 
@@ -76,13 +90,12 @@ export async function checkRegression(run: EvalRun): Promise<RegressionResult> {
   const modelDefIds = new Set(currentResults.map((r) => r.modelDefId));
   const testCaseIds = new Set(currentResults.map((r) => r.testCaseId));
 
-  const [versions, testCases] = await Promise.all([
-    Promise.all(
-      [...versionIds].map((vid) => db.promptVersions.get(vid))
-    ),
+  const [versions, testCases, modelConfigs] = await Promise.all([
+    Promise.all([...versionIds].map((vid) => db.promptVersions.get(vid))),
     Promise.all(
       [...testCaseIds].map((tid) => db.testCases.get(tid))
     ),
+    db.modelConfigs.toArray(),
   ]);
   const versionNumMap = new Map(versions.filter(Boolean).map((v) => [v!.id, v!.versionNumber]));
   const testCaseInputMap = new Map(testCases.filter(Boolean).map((t) => [t!.id, t!.input]));
@@ -90,8 +103,7 @@ export async function checkRegression(run: EvalRun): Promise<RegressionResult> {
   // 模型标签
   const modelLabels = new Map<string, string>();
   for (const mid of modelDefIds) {
-    const mc = await db.modelConfigs.toArray();
-    for (const c of mc) {
+    for (const c of modelConfigs) {
       const def = c.models.find((m) => m.id === mid);
       if (def) {
         modelLabels.set(mid, def.label);
@@ -103,20 +115,23 @@ export async function checkRegression(run: EvalRun): Promise<RegressionResult> {
   const items: RegressionItem[] = [];
 
   for (const r of currentResults) {
-    const key = `${r.testCaseId}::${r.promptVersionId}::${r.modelDefId}`;
-    const oldScore = oldScoreMap.get(key);
-    if (oldScore === undefined) continue;
+    const version = versionMap.get(r.promptVersionId);
+    if (!version) continue;
+    const key = `${r.testCaseId}::${version.promptId}::${r.modelDefId}`;
+    const previous = oldScoreMap.get(key);
+    if (!previous) continue;
 
     const newScore = overallScore(r.scores);
-    const delta = newScore - oldScore;
+    const delta = newScore - previous.score;
     items.push({
       testCaseId: r.testCaseId,
       testCaseInput: testCaseInputMap.get(r.testCaseId) ?? "(已删除)",
       promptVersionId: r.promptVersionId,
       promptVersionNum: versionNumMap.get(r.promptVersionId) ?? 0,
+      oldPromptVersionNum: previous.versionNumber,
       modelDefId: r.modelDefId,
       modelLabel: modelLabels.get(r.modelDefId) ?? "未知",
-      oldScore,
+      oldScore: previous.score,
       newScore,
       delta,
       fixed: delta >= 0.5,

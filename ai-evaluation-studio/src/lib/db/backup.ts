@@ -11,9 +11,10 @@ import type {
   KBDocument,
   KBChunk,
   EmbedConfig,
+  MediaGeneration,
 } from "@/lib/types";
 
-const BACKUP_VERSION = 3;
+const BACKUP_VERSION = 5;
 
 export interface BackupPayload {
   version: number;
@@ -29,6 +30,8 @@ export interface BackupPayload {
   kbDocuments: KBDocument[];
   kbChunks: Array<Omit<KBChunk, "embedding"> & { embedding: number[] }>;
   embedConfig?: EmbedConfig | null;
+  mediaGenerations?: MediaGeneration[];
+  secretsIncluded?: boolean;
 }
 
 export async function exportAll(): Promise<BackupPayload> {
@@ -44,7 +47,7 @@ export async function exportAll(): Promise<BackupPayload> {
     knowledgeBases,
     kbDocuments,
     kbChunks,
-    embedConfig,
+    mediaGenerations,
   ] = await Promise.all([
     db.testSuites.toArray(),
     db.testCases.toArray(),
@@ -56,7 +59,7 @@ export async function exportAll(): Promise<BackupPayload> {
     db.knowledgeBases.toArray(),
     db.kbDocuments.toArray(),
     db.kbChunks.toArray(),
-    db.embedConfig.get("global"),
+    db.mediaGenerations.toArray(),
   ]);
 
   // Float64Array → number[] for JSON serialization
@@ -72,13 +75,15 @@ export async function exportAll(): Promise<BackupPayload> {
     testCases,
     prompts,
     promptVersions,
-    modelConfigs,
+    modelConfigs: modelConfigs.map((config) => ({ ...config, apiKey: "" })),
     evalRuns,
     evalResults,
     knowledgeBases,
     kbDocuments,
     kbChunks: serializedChunks,
-    embedConfig: embedConfig ?? null,
+    embedConfig: null,
+    mediaGenerations,
+    secretsIncluded: false,
   };
 }
 
@@ -94,6 +99,7 @@ export interface ImportSummary {
   kbDocuments: number;
   kbChunks: number;
   embedConfig: number;
+  mediaGenerations: number;
 }
 
 export async function importAll(
@@ -103,7 +109,7 @@ export async function importAll(
   if (!payload || typeof payload !== "object") {
     throw new Error("备份文件格式错误");
   }
-  if (payload.version !== BACKUP_VERSION && payload.version !== 2) {
+  if (![2, 3, 4, BACKUP_VERSION].includes(payload.version)) {
     throw new Error(`不支持的备份版本：${payload.version}`);
   }
   // 基本字段校验
@@ -147,6 +153,7 @@ export async function importAll(
       db.knowledgeBases,
       db.kbDocuments,
       db.kbChunks,
+      db.mediaGenerations,
     ],
     async () => {
       if (mode === "replace") {
@@ -162,19 +169,28 @@ export async function importAll(
           db.knowledgeBases.clear(),
           db.kbDocuments.clear(),
           db.kbChunks.clear(),
+          db.mediaGenerations.clear(),
         ]);
       }
       await db.testSuites.bulkPut(payload.testSuites);
       await db.testCases.bulkPut(payload.testCases);
       await db.prompts.bulkPut(payload.prompts);
       await db.promptVersions.bulkPut(payload.promptVersions);
-      await db.modelConfigs.bulkPut(payload.modelConfigs);
+      const importedModelConfigs = await Promise.all(
+        payload.modelConfigs.map(async (config) => {
+          if (config.apiKey || mode === "replace") return config;
+          const existing = await db.modelConfigs.get(config.id);
+          return existing ? { ...config, apiKey: existing.apiKey } : config;
+        })
+      );
+      await db.modelConfigs.bulkPut(importedModelConfigs);
       await db.evalRuns.bulkPut(payload.evalRuns);
       await db.evalResults.bulkPut(payload.evalResults);
       await db.knowledgeBases.bulkPut(payload.knowledgeBases);
       await db.kbDocuments.bulkPut(payload.kbDocuments);
       await db.kbChunks.bulkPut(deserializedChunks);
-      if (payload.embedConfig) {
+      await db.mediaGenerations.bulkPut(payload.mediaGenerations ?? []);
+      if (payload.embedConfig?.apiKey) {
         await db.embedConfig.put(payload.embedConfig as EmbedConfig);
       }
     }
@@ -191,6 +207,7 @@ export async function importAll(
     knowledgeBases: payload.knowledgeBases.length,
     kbDocuments: payload.kbDocuments.length,
     kbChunks: payload.kbChunks.length,
-    embedConfig: payload.embedConfig ? 1 : 0,
+    embedConfig: payload.embedConfig?.apiKey ? 1 : 0,
+    mediaGenerations: payload.mediaGenerations?.length ?? 0,
   };
 }

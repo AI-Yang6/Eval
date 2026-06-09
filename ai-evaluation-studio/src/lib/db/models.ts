@@ -110,6 +110,22 @@ export async function upsertModelConfig(input: {
   };
 
   if (existing) {
+    const nextIds = new Set(config.models.map((model) => model.id));
+    const removedIds = new Set(
+      existing.models.filter((model) => !nextIds.has(model.id)).map((model) => model.id)
+    );
+    if (removedIds.size > 0) {
+      const referencedRuns = await getDB().evalRuns
+        .filter(
+          (run) =>
+            run.modelDefIds.some((id) => removedIds.has(id)) ||
+            removedIds.has(run.judgeModelDefId)
+        )
+        .count();
+      if (referencedRuns > 0) {
+        throw new Error(`本次保存会删除已被 ${referencedRuns} 个评估任务引用的模型`);
+      }
+    }
     await getDB().modelConfigs.put(config);
   } else {
     await getDB().modelConfigs.add(config);
@@ -120,7 +136,21 @@ export async function upsertModelConfig(input: {
 export async function deleteModelConfig(
   provider: ModelProvider
 ): Promise<void> {
-  await getDB().modelConfigs.where("provider").equals(provider).delete();
+  const db = getDB();
+  const cfg = await getModelConfig(provider);
+  if (!cfg) return;
+  const modelIds = new Set(cfg.models.map((model) => model.id));
+  const referencedRuns = await db.evalRuns
+    .filter(
+      (run) =>
+        run.modelDefIds.some((id) => modelIds.has(id)) ||
+        modelIds.has(run.judgeModelDefId)
+    )
+    .count();
+  if (referencedRuns > 0) {
+    throw new Error(`该 Provider 的模型已被 ${referencedRuns} 个评估任务引用，不能删除`);
+  }
+  await db.modelConfigs.where("provider").equals(provider).delete();
 }
 
 export async function toggleModelEnabled(
@@ -170,6 +200,18 @@ export async function removeCustomModel(
 ): Promise<void> {
   const cfg = await getModelConfig(provider);
   if (!cfg) return;
+  const def = cfg.models.find((model) => model.modelId === modelId);
+  if (def) {
+    const referencedRuns = await getDB().evalRuns
+      .filter(
+        (run) =>
+          run.modelDefIds.includes(def.id) || run.judgeModelDefId === def.id
+      )
+      .count();
+    if (referencedRuns > 0) {
+      throw new Error(`该模型已被 ${referencedRuns} 个评估任务引用，不能删除`);
+    }
+  }
   const models = cfg.models.filter(
     (m) => !(m.isCustom && m.modelId === modelId)
   );

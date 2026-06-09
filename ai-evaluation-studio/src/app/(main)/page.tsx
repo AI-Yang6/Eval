@@ -121,15 +121,21 @@ export default function HomePage() {
           // prompt name (取第一个 version 对应的 prompt)
           let promptName = "—";
           if (r.promptVersionIds.length > 0) {
-            const v = await db.promptVersions.get(r.promptVersionIds[0]);
+            const v =
+              r.snapshots?.promptVersions.find((item) => item.id === r.promptVersionIds[0]) ??
+              await db.promptVersions.get(r.promptVersionIds[0]);
             if (v) {
-              const p = await db.prompts.get(v.promptId);
+              const p =
+                r.snapshots?.prompts?.find((item) => item.id === v.promptId) ??
+                await db.prompts.get(v.promptId);
               promptName = p?.name ?? "—";
             }
           }
           const modelLabels: string[] = [];
           for (const mid of r.modelDefIds) {
-            const m = await findModelDef(mid);
+            const m =
+              r.snapshots?.models.find((item) => item.def.id === mid) ??
+              await findModelDef(mid);
             if (m) modelLabels.push(m.def.label);
           }
 
@@ -187,10 +193,16 @@ export default function HomePage() {
           let bestLabel: string | undefined;
           if (bestKey) {
             const cur = comboMap.get(bestKey)!;
-            const v = await db.promptVersions.get(cur.promptVersionId);
-            const m = await findModelDef(cur.modelDefId);
+            const v =
+              r.snapshots?.promptVersions.find((item) => item.id === cur.promptVersionId) ??
+              await db.promptVersions.get(cur.promptVersionId);
+            const m =
+              r.snapshots?.models.find((item) => item.def.id === cur.modelDefId) ??
+              await findModelDef(cur.modelDefId);
             if (v && m) {
-              const p = await db.prompts.get(v.promptId);
+              const p =
+                r.snapshots?.prompts?.find((item) => item.id === v.promptId) ??
+                await db.prompts.get(v.promptId);
               bestLabel = `v${v.versionNumber} · ${m.def.label}`;
               if (
                 !bestCombo ||

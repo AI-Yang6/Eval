@@ -11,6 +11,7 @@ import type {
   KBDocument,
   KBChunk,
   EmbedConfig,
+  MediaGeneration,
 } from "@/lib/types";
 
 export class EvalStudioDB extends Dexie {
@@ -25,6 +26,7 @@ export class EvalStudioDB extends Dexie {
   kbDocuments!: Table<KBDocument, string>;
   kbChunks!: Table<KBChunk, string>;
   embedConfig!: Table<EmbedConfig, string>;
+  mediaGenerations!: Table<MediaGeneration, string>;
 
   constructor() {
     super("EvalStudioDB");
@@ -67,6 +69,22 @@ export class EvalStudioDB extends Dexie {
       knowledgeBases: "id, name, embeddingProvider, createdAt",
       kbDocuments: "id, knowledgeBaseId, filename, createdAt, [knowledgeBaseId+createdAt]",
       kbChunks: "id, knowledgeBaseId, documentId, index, [knowledgeBaseId+index]",
+    });
+    this.version(4).stores({
+      testSuites: "id, name, createdAt, updatedAt",
+      testCases: "id, testSuiteId, order, [testSuiteId+order]",
+      prompts: "id, name, createdAt",
+      promptVersions:
+        "id, promptId, versionNumber, [promptId+versionNumber]",
+      modelConfigs: "id, provider",
+      embedConfig: "id",
+      evalRuns: "id, status, createdAt, testSuiteId",
+      evalResults:
+        "id, evalRunId, testCaseId, [evalRunId+testCaseId], [evalRunId+promptVersionId+modelDefId]",
+      knowledgeBases: "id, name, embeddingProvider, createdAt",
+      kbDocuments: "id, knowledgeBaseId, filename, createdAt, [knowledgeBaseId+createdAt]",
+      kbChunks: "id, knowledgeBaseId, documentId, index, [knowledgeBaseId+index]",
+      mediaGenerations: "id, mode, provider, createdAt",
     });
   }
 }

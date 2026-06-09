@@ -13,6 +13,7 @@ import {
   LayoutDashboard,
   HardDrive,
   BookOpen,
+  ImageIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BackupDialog } from "@/components/backup/backup-dialog";
@@ -35,6 +36,7 @@ const NAV_GROUPS = [
     label: "评估与分析",
     items: [
       { href: "/evaluations/new", label: "新建评估", icon: Zap },
+      { href: "/media", label: "多模态生成", icon: ImageIcon },
       { href: "/history", label: "评估历史", icon: History },
     ],
   },

@@ -14,6 +14,7 @@ import {
   RefreshCw,
   ThumbsDown,
   Info,
+  Database,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -133,26 +134,36 @@ export default function ReportPage({ params }: Props) {
         }
         const [list, cs, ts] = await Promise.all([
           listResultsByRun(id),
-          listTestCases(r.testSuiteId),
-          getTestSuite(r.testSuiteId),
+          r.snapshots?.testCases
+            ? Promise.resolve(r.snapshots.testCases)
+            : listTestCases(r.testSuiteId),
+          r.snapshots?.testSuite
+            ? Promise.resolve(r.snapshots.testSuite)
+            : getTestSuite(r.testSuiteId),
         ]);
 
         const promptIds = new Set(r.promptVersionIds);
         const modelIds = new Set(r.modelDefIds);
         const versionMap = new Map<string, PromptVersion>();
         for (const vid of promptIds) {
-          const v = await getDB().promptVersions.get(vid);
+          const v =
+            r.snapshots?.promptVersions.find((item) => item.id === vid) ??
+            await getDB().promptVersions.get(vid);
           if (v) versionMap.set(vid, v);
         }
         const modelMap = new Map<string, ModelDefinition>();
         for (const mid of modelIds) {
-          const m = await findModelDef(mid);
+          const m =
+            r.snapshots?.models.find((item) => item.def.id === mid) ??
+            await findModelDef(mid);
           if (m) modelMap.set(mid, m.def);
         }
         const promptNameMap = new Map<string, string>();
         for (const v of versionMap.values()) {
           if (!promptNameMap.has(v.promptId)) {
-            const p = await getDB().prompts.get(v.promptId);
+            const p =
+              r.snapshots?.prompts?.find((item) => item.id === v.promptId) ??
+              await getDB().prompts.get(v.promptId);
             promptNameMap.set(v.promptId, p?.name ?? "未知");
           }
         }
@@ -600,6 +611,7 @@ export default function ReportPage({ params }: Props) {
     setResults((prev) =>
       prev.map((r) => (r.id === resultId ? { ...r, badCase: !current } : r))
     );
+    toast.success(current ? "已取消 Bad Case 标记" : "已标记为 Bad Case");
   }
 
   async function handleSaveHumanScores(
@@ -1269,7 +1281,7 @@ export default function ReportPage({ params }: Props) {
                           {item.testCaseInput}
                         </td>
                         <td className="px-3 py-2 text-text-secondary font-mono">
-                          v{item.promptVersionNum}
+                          v{item.oldPromptVersionNum} → v{item.promptVersionNum}
                         </td>
                         <td className="px-3 py-2 text-text-secondary">
                           {item.modelLabel}
@@ -1309,7 +1321,7 @@ export default function ReportPage({ params }: Props) {
                           {item.testCaseInput}
                         </td>
                         <td className="px-3 py-2 text-text-secondary font-mono">
-                          v{item.promptVersionNum}
+                          v{item.oldPromptVersionNum} → v{item.promptVersionNum}
                         </td>
                         <td className="px-3 py-2 text-text-secondary">
                           {item.modelLabel}
@@ -1372,6 +1384,20 @@ export default function ReportPage({ params }: Props) {
               const { bestKey, worstKey } = bestWorstForCase(tc);
               const bestCombo = combos.find((c) => c.key === bestKey);
               const worstCombo = combos.find((c) => c.key === worstKey);
+              const caseResults = combos
+                .map((c) =>
+                  resultMap.get(`${tc.id}::${c.promptVersionId}::${c.modelDefId}`)
+                )
+                .filter((r): r is EvalResult => !!r);
+              const hitResults = caseResults.filter(
+                (r) => r.retrievedChunks && r.retrievedChunks.length > 0
+              );
+              const bestHitScore = Math.max(
+                ...hitResults.flatMap((r) =>
+                  (r.retrievedChunks ?? []).map((chunk) => chunk.score)
+                ),
+                0
+              );
               return (
                 <div
                   key={tc.id}
@@ -1399,6 +1425,17 @@ export default function ReportPage({ params }: Props) {
                       {worstCombo && bestKey !== worstKey && (
                         <span className="text-danger font-mono">
                           ↓ {worstCombo.promptName} V{worstCombo.versionNumber}+{worstCombo.modelLabel.split(" ")[0]}
+                        </span>
+                      )}
+                      {run.knowledgeBaseId && (
+                        <span
+                          className={cn(
+                            "font-mono",
+                            hitResults.length > 0 ? "text-primary" : "text-text-tertiary"
+                          )}
+                        >
+                          知识命中 {hitResults.length}/{caseResults.length}
+                          {bestHitScore > 0 && ` · Top ${(bestHitScore * 100).toFixed(1)}%`}
                         </span>
                       )}
                       {expanded ? (
@@ -1447,7 +1484,7 @@ export default function ReportPage({ params }: Props) {
                                   </span>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  {r && !r.error && (
+                                  {r && (
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -1455,14 +1492,15 @@ export default function ReportPage({ params }: Props) {
                                         handleToggleBadCase(r.id, !!r.badCase);
                                       }}
                                       className={cn(
-                                        "w-6 h-6 rounded flex items-center justify-center transition-colors",
+                                        "h-7 px-2 rounded flex items-center gap-1.5 text-xs transition-colors border",
                                         r.badCase
-                                          ? "text-[#f59e0b] bg-[rgba(245,158,11,0.12)]"
-                                          : "text-text-tertiary hover:text-[#f59e0b] hover:bg-bg-hover"
+                                          ? "text-[#f59e0b] bg-[rgba(245,158,11,0.12)] border-[rgba(245,158,11,0.3)]"
+                                          : "text-text-tertiary border-border-subtle hover:text-[#f59e0b] hover:bg-bg-hover"
                                       )}
                                       title={r.badCase ? "取消标记" : "标记为 bad case"}
                                     >
                                       <ThumbsDown className="w-3.5 h-3.5" />
+                                      {r.badCase ? "已标记 Bad Case" : "标记 Bad Case"}
                                     </button>
                                   )}
                                   {score !== null ? (
@@ -1496,24 +1534,7 @@ export default function ReportPage({ params }: Props) {
                                     {r.actualOutput}
                                   </pre>
                                   {r.retrievedChunks && r.retrievedChunks.length > 0 && (
-                                    <div className="mt-2 pt-2 border-t border-border-subtle">
-                                      <div className="text-[10px] text-text-tertiary uppercase tracking-wider mb-1.5">
-                                        检索到的知识片段
-                                      </div>
-                                      {r.retrievedChunks.map((chunk, i) => (
-                                        <div key={i} className="text-xs text-text-secondary mb-1 p-2 rounded bg-bg-base border border-border-subtle">
-                                          <div className="flex items-center justify-between mb-0.5">
-                                            <span className="font-mono text-text-tertiary">#{i + 1}</span>
-                                            <span className="font-mono text-text-tertiary">
-                                              相似度: {(chunk.score * 100).toFixed(1)}%
-                                            </span>
-                                          </div>
-                                          <pre className="whitespace-pre-wrap break-words text-xs text-text-secondary font-mono">
-                                            {chunk.content}
-                                          </pre>
-                                        </div>
-                                      ))}
-                                    </div>
+                                    <RetrievedChunksPanel chunks={r.retrievedChunks} />
                                   )}
                                   {Object.keys(r.scores).length > 0 && (
                                     <HumanScoring
@@ -1549,6 +1570,48 @@ export default function ReportPage({ params }: Props) {
         </div>
       </Section>
     </div>
+  );
+}
+
+function RetrievedChunksPanel({
+  chunks,
+}: {
+  chunks: Array<{ content: string; score: number }>;
+}) {
+  return (
+    <details className="group mt-2 border-t border-border-subtle pt-2">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-text-secondary hover:bg-bg-hover/60">
+        <span className="flex items-center gap-1.5">
+          <Database className="h-3.5 w-3.5 text-primary" />
+          检索命中对照
+          <span className="font-mono text-text-tertiary">
+            {chunks.length} 个片段
+          </span>
+        </span>
+        <span className="flex items-center gap-1 font-mono text-text-tertiary">
+          Top {(Math.max(...chunks.map((chunk) => chunk.score)) * 100).toFixed(1)}%
+          <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+        </span>
+      </summary>
+      <div className="mt-2 space-y-1.5">
+        {chunks.map((chunk, i) => (
+          <div
+            key={i}
+            className="rounded bg-bg-base p-2 text-xs text-text-secondary border border-border-subtle"
+          >
+            <div className="mb-0.5 flex items-center justify-between">
+              <span className="font-mono text-text-tertiary">#{i + 1}</span>
+              <span className="font-mono text-text-tertiary">
+                相似度: {(chunk.score * 100).toFixed(1)}%
+              </span>
+            </div>
+            <pre className="max-h-[180px] overflow-y-auto whitespace-pre-wrap break-words font-mono text-xs text-text-secondary">
+              {chunk.content}
+            </pre>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 

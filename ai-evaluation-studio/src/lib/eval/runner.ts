@@ -1,10 +1,10 @@
-import { v4 as uuid } from "uuid";
 import {
   getEvalRun,
   updateEvalRunStatus,
   bulkUpsertResults,
   upsertResult,
   listResultsByRun,
+  touchEvalRun,
 } from "@/lib/db/evaluations";
 import { listTestCases } from "@/lib/db/test-suites";
 import { findModelDef, getModelConfig } from "@/lib/db/models";
@@ -26,10 +26,9 @@ import type {
 
 const CONCURRENCY = 4;
 
-// 内存中的取消标志集合：详情页点「中止」时往里塞 runId，
-// runner 每次步进会检查并提前返回。
-// 注意：这只在同一个浏览器会话内生效；若刷新页面 runner 会丢失（运行在前端是这种限制）
+// 同标签页用内存标志快速取消；跨标签页取消通过持久化 run.status 感知。
 const cancelFlags = new Set<string>();
+const activeRuns = new Set<string>();
 
 export function requestCancelEvaluation(evalRunId: string): void {
   cancelFlags.add(evalRunId);
@@ -37,6 +36,16 @@ export function requestCancelEvaluation(evalRunId: string): void {
 
 export function isCancelled(evalRunId: string): boolean {
   return cancelFlags.has(evalRunId);
+}
+
+async function shouldStop(evalRunId: string): Promise<boolean> {
+  if (cancelFlags.has(evalRunId)) return true;
+  const run = await getEvalRun(evalRunId);
+  return !run || run.status !== "running";
+}
+
+function resultId(job: Job, evalRunId: string): string {
+  return `${evalRunId}:${job.testCase.id}:${job.promptVersion.id}:${job.modelDef.id}`;
 }
 
 // 重试一次评估中所有失败的 case：
@@ -143,38 +152,69 @@ async function runPool<T, R>(
 }
 
 export async function startEvaluation(evalRunId: string): Promise<void> {
+  if (activeRuns.has(evalRunId)) return;
+  activeRuns.add(evalRunId);
+  try {
+    if (typeof navigator !== "undefined" && navigator.locks) {
+      await navigator.locks.request(
+        `eval-studio-run:${evalRunId}`,
+        { ifAvailable: true },
+        async (lock) => {
+          if (lock) await runEvaluation(evalRunId);
+        }
+      );
+      return;
+    }
+    await runEvaluation(evalRunId);
+  } finally {
+    activeRuns.delete(evalRunId);
+  }
+}
+
+async function runEvaluation(evalRunId: string): Promise<void> {
   try {
     const run = await getEvalRun(evalRunId);
     if (!run) throw new Error("评估不存在");
+    if (run.status !== "running") return;
+    await touchEvalRun(evalRunId);
 
-    const cases = await listTestCases(run.testSuiteId);
+    const cases = run.snapshots?.testCases ?? await listTestCases(run.testSuiteId);
     if (cases.length === 0) throw new Error("测试集没有用例");
 
     // 加载所有 prompt versions
-    const versions: PromptVersion[] = [];
-    for (const vid of run.promptVersionIds) {
-      const v = await getDB().promptVersions.get(vid);
-      if (!v) throw new Error(`Prompt 版本不存在: ${vid}`);
-      versions.push(v);
+    const versions: PromptVersion[] = run.snapshots?.promptVersions ?? [];
+    if (versions.length === 0) {
+      for (const vid of run.promptVersionIds) {
+        const v = await getDB().promptVersions.get(vid);
+        if (!v) throw new Error(`Prompt 版本不存在: ${vid}`);
+        versions.push(v);
+      }
     }
 
     // 加载所有模型
     const modelEntries: Array<{
       config: ModelConfig;
       def: ModelDefinition;
-    }> = [];
-    for (const mid of run.modelDefIds) {
-      const e = await findModelDef(mid);
-      if (!e) throw new Error(`模型不存在: ${mid}`);
-      modelEntries.push(e);
+    }> = run.snapshots?.models ?? [];
+    if (modelEntries.length === 0) {
+      for (const mid of run.modelDefIds) {
+        const e = await findModelDef(mid);
+        if (!e) throw new Error(`模型不存在: ${mid}`);
+        modelEntries.push(e);
+      }
     }
 
     // judge model
-    const judgeEntry = await findModelDef(run.judgeModelDefId);
+    const judgeEntry =
+      run.snapshots?.judgeModel ?? await findModelDef(run.judgeModelDefId);
     if (!judgeEntry) throw new Error("Judge 模型未找到");
 
     // 已存在的成功结果（用于重试时跳过）
     const existing = await listResultsByRun(evalRunId);
+    const failedIds = existing.filter((result) => !!result.error).map((result) => result.id);
+    if (failedIds.length > 0) {
+      await getDB().evalResults.bulkDelete(failedIds);
+    }
     const successKeys = new Set(
       existing
         .filter((r) => !r.error)
@@ -211,25 +251,24 @@ export async function startEvaluation(evalRunId: string): Promise<void> {
     // 如果配置了知识库，预加载 KB 和 modelConfig 信息
     let kbInfo: {
       id: string;
-      provider: ModelConfig;
+      provider: ModelConfig["provider"];
+      apiKey: string;
+      baseURL?: string;
       embeddingModel: string;
       topK: number;
     } | null = null;
     if (run.knowledgeBaseId) {
       const kb = await getKnowledgeBase(run.knowledgeBaseId);
       if (kb) {
+        const embedCfg = await getEmbedConfig();
         const mc = await getModelConfig(kb.embeddingProvider);
-        if (mc) {
-          // 检查统一 EmbedConfig，若有则覆盖凭证
-          const embedCfg = await getEmbedConfig();
-          const effectiveApiKey = embedCfg?.apiKey || mc.apiKey;
-          const effectiveBaseURL = embedCfg?.baseURL !== undefined
-            ? embedCfg.baseURL
-            : mc.baseURL;
-          const effectiveMc = { ...mc, apiKey: effectiveApiKey, baseURL: effectiveBaseURL };
+        if (embedCfg?.apiKey || mc?.apiKey) {
           kbInfo = {
             id: kb.id,
-            provider: effectiveMc,
+            provider: kb.embeddingProvider,
+            apiKey: embedCfg?.apiKey || mc!.apiKey,
+            baseURL:
+              embedCfg?.baseURL !== undefined ? embedCfg.baseURL : mc?.baseURL,
             embeddingModel: kb.embeddingModel,
             topK: run.topK ?? 3,
           };
@@ -238,7 +277,7 @@ export async function startEvaluation(evalRunId: string): Promise<void> {
     }
 
     const generationOutputs = await runPool(jobs, CONCURRENCY, async (job) => {
-      if (cancelFlags.has(evalRunId)) {
+      if (await shouldStop(evalRunId)) {
         return {
           job,
           r: { ok: false as const, error: "已取消", latencyMs: 0 },
@@ -273,9 +312,9 @@ export async function startEvaluation(evalRunId: string): Promise<void> {
           const chunks = await retrieveContext(
             kbInfo.id,
             inputText,
-            kbInfo.provider.provider,
-            kbInfo.provider.apiKey,
-            kbInfo.provider.baseURL,
+            kbInfo.provider,
+            kbInfo.apiKey,
+            kbInfo.baseURL,
             kbInfo.embeddingModel,
             kbInfo.topK
           );
@@ -304,12 +343,12 @@ export async function startEvaluation(evalRunId: string): Promise<void> {
         systemPrompt: job.promptVersion.systemPrompt,
         userPrompt,
       });
+      await touchEvalRun(evalRunId);
       return { job, r, userPrompt, context: vars["context"], retrievedChunks, kbError };
     });
 
-    if (cancelFlags.has(evalRunId)) {
+    if (await shouldStop(evalRunId)) {
       cancelFlags.delete(evalRunId);
-      await updateEvalRunStatus(evalRunId, "cancelled");
       return;
     }
 
@@ -320,13 +359,13 @@ export async function startEvaluation(evalRunId: string): Promise<void> {
     await runPool(generationOutputs, CONCURRENCY, async (item) => {
       const { job, r, userPrompt, context, retrievedChunks, kbError } = item;
 
-      if (cancelFlags.has(evalRunId)) {
+      if (await shouldStop(evalRunId)) {
         return;
       }
 
       if (!r.ok) {
         const failed: EvalResult = {
-          id: uuid(),
+          id: resultId(job, evalRunId),
           evalRunId,
           testCaseId: job.testCase.id,
           promptVersionId: job.promptVersion.id,
@@ -340,6 +379,7 @@ export async function startEvaluation(evalRunId: string): Promise<void> {
         };
         partialResults.push(failed);
         await upsertResult(failed);
+        await touchEvalRun(evalRunId);
         return;
       }
 
@@ -381,7 +421,7 @@ export async function startEvaluation(evalRunId: string): Promise<void> {
       }
 
       const result: EvalResult = {
-        id: uuid(),
+        id: resultId(job, evalRunId),
         evalRunId,
         testCaseId: job.testCase.id,
         promptVersionId: job.promptVersion.id,
@@ -396,12 +436,12 @@ export async function startEvaluation(evalRunId: string): Promise<void> {
       };
       partialResults.push(result);
       await upsertResult(result);
+      await touchEvalRun(evalRunId);
     });
 
     await bulkUpsertResults(partialResults);
-    if (cancelFlags.has(evalRunId)) {
+    if (await shouldStop(evalRunId)) {
       cancelFlags.delete(evalRunId);
-      await updateEvalRunStatus(evalRunId, "cancelled");
       return;
     }
     // 重新读全量结果（包括之前成功跳过的）来决定最终状态：

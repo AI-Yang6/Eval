@@ -335,7 +335,11 @@ function NewEvalInner() {
         const data = await res.json();
         if (!data.ok) {
           return {
-            label: `${entry.config.provider} / ${entry.def.modelId}`,
+            label: `${
+              entry.config.baseURL?.includes("apihub.agnes-ai.com")
+                ? "Agnes（自定义配置）"
+                : entry.config.provider
+            } / ${entry.def.modelId}`,
             error: data.error ?? "未知错误",
           };
         }
@@ -345,11 +349,11 @@ function NewEvalInner() {
         (x): x is { label: string; error: string } => x !== null
       );
       if (failures.length > 0) {
-        const first = failures[0];
         toast.error(
-          `模型校验失败：${first.label} — ${first.error}${
-            failures.length > 1 ? `（共 ${failures.length} 个失败）` : ""
-          }`
+          `模型校验失败（${failures.length} 个）：${failures
+            .map((failure) => `${failure.label} — ${failure.error}`)
+            .join("；")}`,
+          { duration: 15_000 }
         );
         return;
       }
@@ -366,6 +370,29 @@ function NewEvalInner() {
         judgeModelDefId: judgeModelId,
         knowledgeBaseId: selectedKbId || undefined,
         topK: selectedKbId ? topK : undefined,
+        snapshots: {
+          testSuite: selectedSuite!,
+          testCases: await getDB()
+            .testCases.where("testSuiteId")
+            .equals(suiteId)
+            .toArray(),
+          prompts: promptOptions
+            .filter((option) =>
+              option.versions.some((version) => versionIds.has(version.id))
+            )
+            .map((option) => option.prompt),
+          promptVersions: Array.from(versionIds)
+            .map((id) =>
+              promptOptions
+                .flatMap((option) => option.versions)
+                .find((version) => version.id === id)
+            )
+            .filter((version): version is PromptVersion => !!version),
+          models: models
+            .filter((entry) => modelIds.has(entry.def.id))
+            .map((entry) => ({ config: entry.config, def: entry.def })),
+          judgeModel: models.find((entry) => entry.def.id === judgeModelId)!,
+        },
       });
       // 后台启动（不 await），用户立刻进入进度页
       void startEvaluation(run.id);

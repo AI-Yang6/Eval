@@ -5,6 +5,12 @@ import type {
   EvalResult,
   EvalRunStatus,
   RubricDimension,
+  TestSuite,
+  TestCase,
+  PromptVersion,
+  ModelConfig,
+  ModelDefinition,
+  Prompt,
 } from "@/lib/types";
 
 const now = () => new Date().toISOString();
@@ -29,7 +35,16 @@ export async function createEvalRun(input: {
   judgeModelDefId: string;
   knowledgeBaseId?: string;
   topK?: number;
+  snapshots?: {
+    testSuite: TestSuite;
+    testCases: TestCase[];
+    prompts?: Prompt[];
+    promptVersions: PromptVersion[];
+    models: Array<{ config: ModelConfig; def: ModelDefinition }>;
+    judgeModel: { config: ModelConfig; def: ModelDefinition };
+  };
 }): Promise<EvalRun> {
+  const ts = now();
   const run: EvalRun = {
     id: uuid(),
     name: input.name,
@@ -41,8 +56,10 @@ export async function createEvalRun(input: {
     judgeModelDefId: input.judgeModelDefId,
     knowledgeBaseId: input.knowledgeBaseId,
     topK: input.topK,
-    createdAt: now(),
+    createdAt: ts,
     completedAt: null,
+    lastHeartbeatAt: ts,
+    snapshots: input.snapshots,
   };
   await getDB().evalRuns.add(run);
   return run;
@@ -52,9 +69,13 @@ export async function updateEvalRunStatus(
   id: string,
   status: EvalRunStatus
 ): Promise<void> {
-  const patch: Partial<EvalRun> = { status };
-  if (status !== "running") patch.completedAt = now();
+  const patch: Partial<EvalRun> = { status, lastHeartbeatAt: now() };
+  patch.completedAt = status === "running" ? null : now();
   await getDB().evalRuns.update(id, patch);
+}
+
+export async function touchEvalRun(id: string): Promise<void> {
+  await getDB().evalRuns.update(id, { lastHeartbeatAt: now() });
 }
 
 export async function deleteEvalRun(id: string): Promise<void> {

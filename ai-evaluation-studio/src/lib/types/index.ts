@@ -47,7 +47,9 @@ export type ModelProvider =
   | "glm"
   | "kimi"
   | "doubao"
-  | "minimax";
+  | "minimax"
+  | "agnes"
+  | "custom";
 
 export interface ModelDefinition {
   id: string;
@@ -87,6 +89,15 @@ export interface EvalRun {
   topK?: number;
   createdAt: string;
   completedAt: string | null;
+  lastHeartbeatAt?: string;
+  snapshots?: {
+    testSuite: TestSuite;
+    testCases: TestCase[];
+    prompts?: Prompt[];
+    promptVersions: PromptVersion[];
+    models: Array<{ config: ModelConfig; def: ModelDefinition }>;
+    judgeModel: { config: ModelConfig; def: ModelDefinition };
+  };
 }
 
 export interface EvalResult {
@@ -140,4 +151,16 @@ export interface EmbedConfig {
   id: string;       // 固定值 "global"
   apiKey: string;
   baseURL?: string;
+}
+
+export interface MediaGeneration {
+  id: string;
+  mode: "image" | "video";
+  url: string;
+  prompt: string;
+  modelId: string;
+  provider: ModelProvider;
+  size: string;
+  taskId?: string;
+  createdAt: string;
 }

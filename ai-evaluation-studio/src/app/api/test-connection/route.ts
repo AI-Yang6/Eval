@@ -6,6 +6,7 @@ import {
   PROVIDER_DEFAULT_BASE_URL,
   isOpenAICompatible,
   MODEL_PRESETS,
+  normalizeProviderBaseURL,
 } from "@/lib/model-adapters/presets";
 import {
   checkRateLimit,
@@ -22,6 +23,22 @@ interface TestConnectionBody {
   apiKey: string;
   baseURL?: string;
   modelId?: string;
+}
+
+function explainConnectionError(
+  message: string,
+  provider: ModelProvider,
+  baseURL: string | undefined,
+  modelId: string | undefined
+): string {
+  if (!message.includes("No available channel for model")) return message;
+  const isAgnes =
+    provider === "agnes" || baseURL?.includes("apihub.agnes-ai.com");
+  if (!isAgnes) return message;
+  const arkHint = modelId?.startsWith("ark-")
+    ? "该 ark-* ID 看起来像火山方舟推理接入点 ID；如果它属于你的火山方舟账号，请改用火山方舟 Base URL 与对应 API Key，不能通过 Agnes Key 调用。"
+    : "";
+  return `请求已到达 Agnes，但当前 API Key 的 default 分组没有模型 ${modelId ?? "未知"} 的可用通道。${arkHint}请在 Agnes 后台确认可用模型 ID、Key 分组与余额，或取消勾选该模型。`;
 }
 
 export async function POST(req: Request) {
@@ -44,14 +61,14 @@ export async function POST(req: Request) {
     // 用 preset 列表里第一个模型做 ping（通常是最基础的 chat 模型）
     // 避免拿 reasoner / 长上下文等有特殊语义的模型当 ping 目标
     const target = modelId ?? MODEL_PRESETS[provider]?.[0]?.modelId;
-    if (!target) {
-      return jsonResponse(
-        { ok: false, error: `${provider} 没有可用模型预设` },
-        { status: 400 }
-      );
-    }
 
     if (provider === "anthropic") {
+      if (!target) {
+        return jsonResponse(
+          { ok: false, error: `${provider} 没有可用模型预设` },
+          { status: 400 }
+        );
+      }
       const anthropic = createAnthropic({ apiKey });
       const r = await generateText({
         model: anthropic(target),
@@ -63,13 +80,18 @@ export async function POST(req: Request) {
 
     if (isOpenAICompatible(provider)) {
       const finalBase =
-        baseURL?.trim() || PROVIDER_DEFAULT_BASE_URL[provider] || undefined;
-      const defaultBase = PROVIDER_DEFAULT_BASE_URL[provider];
-      const isCustomBase = finalBase && finalBase !== defaultBase;
-
-      // 没有显式指定 modelId + 自定义 Base URL → 预设模型大概率不在目标端点，
+        normalizeProviderBaseURL(provider, baseURL) ||
+        PROVIDER_DEFAULT_BASE_URL[provider] ||
+        undefined;
+      if (provider === "custom" && !finalBase) {
+        return jsonResponse(
+          { ok: false, error: "自定义 Provider 必须填写 Base URL" },
+          { status: 400 }
+        );
+      }
+      // 没有显式指定 modelId + 自定义 Base URL 或无预设模型 → 预设模型大概率不在目标端点，
       // 改用 /v1/models 验证连通性
-      if (isCustomBase && !modelId) {
+      if (!target && finalBase) {
         const modelsURL = finalBase.replace(/\/+$/, "") + "/models";
         const res = await fetch(modelsURL, {
           headers: { authorization: `Bearer ${apiKey}` },
@@ -90,6 +112,12 @@ export async function POST(req: Request) {
           ok: true,
           modelId: "(自定义端点，已验证连通)",
         });
+      }
+      if (!target) {
+        return jsonResponse(
+          { ok: false, error: `${provider} 没有可用模型，请先添加 Model ID` },
+          { status: 400 }
+        );
       }
 
       const client = createOpenAI({
@@ -112,6 +140,12 @@ export async function POST(req: Request) {
     );
   } catch (e) {
     const msg = sanitizeErrorMessage(e);
-    return jsonResponse({ ok: false, error: msg }, { status: 200 });
+    return jsonResponse(
+      {
+        ok: false,
+        error: explainConnectionError(msg, provider, baseURL, modelId),
+      },
+      { status: 200 }
+    );
   }
 }

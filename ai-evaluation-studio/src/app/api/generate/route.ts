@@ -5,6 +5,7 @@ import type { ModelProvider } from "@/lib/types";
 import {
   PROVIDER_DEFAULT_BASE_URL,
   isOpenAICompatible,
+  normalizeProviderBaseURL,
 } from "@/lib/model-adapters/presets";
 import {
   checkRateLimit,
@@ -64,7 +65,15 @@ export async function POST(req: Request) {
       model = createAnthropic({ apiKey })(modelId);
     } else if (isOpenAICompatible(provider)) {
       const finalBase =
-        baseURL?.trim() || PROVIDER_DEFAULT_BASE_URL[provider] || undefined;
+        normalizeProviderBaseURL(provider, baseURL) ||
+        PROVIDER_DEFAULT_BASE_URL[provider] ||
+        undefined;
+      if (provider === "custom" && !finalBase) {
+        return jsonResponse(
+          { ok: false, error: "自定义 Provider 必须填写 Base URL" },
+          { status: 400 }
+        );
+      }
       // 关键：用 .chat() 走 /chat/completions，否则默认走 Responses API，
       // OpenAI 兼容端点（DeepSeek/Qwen/GLM 等）会返回 404 Not Found
       model = createOpenAI({ apiKey, baseURL: finalBase }).chat(modelId);

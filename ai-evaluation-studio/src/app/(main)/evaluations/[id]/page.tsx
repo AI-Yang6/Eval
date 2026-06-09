@@ -88,16 +88,20 @@ export default function EvalRunPage({ params }: Props) {
           return;
         }
         setRun(r);
-        const cases = await listTestCases(r.testSuiteId);
+        const cases = r.snapshots?.testCases ?? await listTestCases(r.testSuiteId);
         setTotalCases(cases.length);
 
         const list: ComboInfo[] = [];
         for (const vid of r.promptVersionIds) {
-          const v = await getDB().promptVersions.get(vid);
+          const v =
+            r.snapshots?.promptVersions.find((item) => item.id === vid) ??
+            await getDB().promptVersions.get(vid);
           if (!v) continue;
           const p = await getDB().prompts.get(v.promptId);
           for (const mid of r.modelDefIds) {
-            const m = await findModelDef(mid);
+            const m =
+              r.snapshots?.models.find((item) => item.def.id === mid) ??
+              await findModelDef(mid);
             if (!m) continue;
             list.push({
               promptVersion: v,

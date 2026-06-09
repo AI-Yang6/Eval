@@ -7,6 +7,19 @@ export interface ModelPreset {
   outputPricePer1k: number; // USD
 }
 
+export const MODEL_PROVIDERS: ModelProvider[] = [
+  "openai",
+  "anthropic",
+  "deepseek",
+  "qwen",
+  "glm",
+  "kimi",
+  "doubao",
+  "minimax",
+  "agnes",
+  "custom",
+];
+
 // 价格基于 2026-05 公开定价（仅供预估，实际以 provider 为准）
 // 国产模型价格按 7.2 RMB/USD 折算
 export const MODEL_PRESETS: Record<ModelProvider, ModelPreset[]> = {
@@ -164,6 +177,11 @@ export const MODEL_PRESETS: Record<ModelProvider, ModelPreset[]> = {
       outputPricePer1k: 0.00417,
     },
   ],
+  // Agnes/Sapiens AI 使用 OpenAI 兼容协议。不同账号可用模型可能不同，
+  // 因此默认不写死模型 ID，在配置弹窗中添加实际 Model ID。
+  agnes: [],
+  // 通用 OpenAI-compatible 自定义端点，用于 Agnes 以外的网关、私有部署等。
+  custom: [],
 };
 
 export const PROVIDER_LABELS: Record<ModelProvider, string> = {
@@ -175,6 +193,8 @@ export const PROVIDER_LABELS: Record<ModelProvider, string> = {
   kimi: "月之暗面 Kimi",
   doubao: "豆包",
   minimax: "MiniMax",
+  agnes: "Agnes AI",
+  custom: "自定义 OpenAI 兼容",
 };
 
 // 国产 provider 默认 baseURL（OpenAI 兼容协议）
@@ -187,6 +207,8 @@ export const PROVIDER_DEFAULT_BASE_URL: Record<ModelProvider, string | null> = {
   kimi: "https://api.moonshot.cn/v1",
   doubao: "https://ark.cn-beijing.volces.com/api/v3",
   minimax: "https://api.minimax.chat/v1",
+  agnes: "https://apihub.agnes-ai.com/v1",
+  custom: null,
 };
 
 export const PROVIDER_KEY_PLACEHOLDER: Record<ModelProvider, string> = {
@@ -198,6 +220,8 @@ export const PROVIDER_KEY_PLACEHOLDER: Record<ModelProvider, string> = {
   kimi: "sk-...",
   doubao: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   minimax: "eyJ...",
+  agnes: "sk-...",
+  custom: "sk-...",
 };
 
 export const PROVIDER_GLYPH: Record<ModelProvider, string> = {
@@ -209,11 +233,28 @@ export const PROVIDER_GLYPH: Record<ModelProvider, string> = {
   kimi: "🌙",
   doubao: "🫘",
   minimax: "⚡",
+  agnes: "✨",
+  custom: "🔌",
 };
 
 // 是否走 OpenAI 兼容协议（决定后端用哪个 SDK）
 export function isOpenAICompatible(provider: ModelProvider): boolean {
   return provider !== "anthropic";
+}
+
+export function normalizeProviderBaseURL(
+  provider: ModelProvider,
+  baseURL?: string
+): string | undefined {
+  const trimmed = baseURL?.trim().replace(/\/+$/, "");
+  if (!trimmed) return undefined;
+  if (
+    (provider === "agnes" || provider === "custom") &&
+    trimmed === "https://apihub.agnes-ai.com"
+  ) {
+    return "https://apihub.agnes-ai.com/v1";
+  }
+  return trimmed;
 }
 
 export function getPreset(
@@ -232,6 +273,8 @@ export const EMBEDDING_MODELS: Record<ModelProvider, string[]> = {
   kimi: ["moonshot-v1-embedding"],
   doubao: [],
   minimax: [],
+  agnes: [],
+  custom: [],
 };
 
 export function hasEmbeddingSupport(provider: ModelProvider): boolean {

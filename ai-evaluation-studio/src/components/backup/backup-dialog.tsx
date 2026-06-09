@@ -49,7 +49,8 @@ export function BackupDialog({
       URL.revokeObjectURL(url);
       toast.success(
         `已导出 ${payload.testSuites.length} 个测试集、${payload.prompts.length} 个 Prompt、${payload.knowledgeBases.length} 个知识库、${payload.evalRuns.length} 次评估` +
-        (payload.embedConfig ? "、Embedding 统一配置" : "")
+        (payload.mediaGenerations?.length ? `、${payload.mediaGenerations.length} 条生成历史` : "") +
+        "（不包含 API Key）"
       );
     } catch (e) {
       toast.error(`导出失败：${e instanceof Error ? e.message : String(e)}`);
@@ -81,7 +82,7 @@ export function BackupDialog({
     try {
       const summary = await importAll(pendingFile.payload, confirmMode);
       toast.success(
-        `导入完成：${summary.testSuites} 个测试集 · ${summary.prompts} 个 Prompt · ${summary.knowledgeBases} 个知识库 · ${summary.evalRuns} 次评估${summary.embedConfig ? " · Embedding 统一配置" : ""}`
+        `导入完成：${summary.testSuites} 个测试集 · ${summary.prompts} 个 Prompt · ${summary.knowledgeBases} 个知识库 · ${summary.evalRuns} 次评估 · ${summary.mediaGenerations} 条生成历史${summary.embedConfig ? " · Embedding 统一配置" : ""}`
       );
       setPendingFile(null);
       onImported?.();
@@ -119,7 +120,7 @@ export function BackupDialog({
                     导出全部数据
                   </div>
                   <div className="text-xs text-text-tertiary mt-0.5">
-                    打包成 JSON，包含测试集、Prompt、模型配置、评估历史
+                    打包成 JSON，包含测试集、Prompt、模型配置、评估历史和生成历史
                   </div>
                 </div>
               </div>
@@ -162,7 +163,7 @@ export function BackupDialog({
             </div>
 
             <div className="text-[11px] text-text-tertiary leading-relaxed px-1">
-              API Key 也会被打包到备份文件里，请妥善保管。
+              为保护凭证，备份文件不会包含 Provider 或 Embedding API Key；恢复后需重新配置凭证。
             </div>
           </div>
         ) : (
@@ -187,7 +188,12 @@ export function BackupDialog({
                   {pendingFile.payload.prompts.length} 个 Prompt ·{" "}
                   {pendingFile.payload.knowledgeBases.length} 个知识库 ·{" "}
                   {pendingFile.payload.evalRuns.length} 次评估
-                  {pendingFile.payload.embedConfig ? " · Embedding 统一配置" : ""}
+                  {pendingFile.payload.mediaGenerations?.length
+                    ? ` · ${pendingFile.payload.mediaGenerations.length} 条生成历史`
+                    : ""}
+                  {pendingFile.payload.secretsIncluded === false
+                    ? " · 不包含 API Key"
+                    : " · 旧版备份可能包含 API Key"}
                 </span>
               </div>
             </div>

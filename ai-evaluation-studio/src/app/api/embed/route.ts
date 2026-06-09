@@ -2,7 +2,6 @@ import type { ModelProvider } from "@/lib/types";
 import {
   PROVIDER_DEFAULT_BASE_URL,
   isOpenAICompatible,
-  EMBEDDING_MODELS,
 } from "@/lib/model-adapters/presets";
 import {
   checkRateLimit,
@@ -53,15 +52,6 @@ export async function POST(req: Request) {
     return jsonResponse(
       { ok: false, error: "Embedding 输入过长，请拆分文档后重试" },
       { status: 413 }
-    );
-  }
-
-  // 只要该 provider 支持 Embedding 即可，不限制模型名（允许自定义模型）
-  const supported = EMBEDDING_MODELS[body.provider];
-  if (!supported || supported.length === 0) {
-    return jsonResponse(
-      { ok: false, error: `${body.provider} 暂不支持 Embedding` },
-      { status: 400 }
     );
   }
 

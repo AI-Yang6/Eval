@@ -41,13 +41,18 @@ export async function updateTestSuite(
 }
 
 export async function deleteTestSuite(id: string): Promise<void> {
-  await getDB().transaction(
+  const db = getDB();
+  const referencedRuns = await db.evalRuns.where("testSuiteId").equals(id).count();
+  if (referencedRuns > 0) {
+    throw new Error(`该测试集已被 ${referencedRuns} 个评估任务引用，不能删除`);
+  }
+  await db.transaction(
     "rw",
-    getDB().testSuites,
-    getDB().testCases,
+    db.testSuites,
+    db.testCases,
     async () => {
-      await getDB().testCases.where("testSuiteId").equals(id).delete();
-      await getDB().testSuites.delete(id);
+      await db.testCases.where("testSuiteId").equals(id).delete();
+      await db.testSuites.delete(id);
     }
   );
 }
@@ -108,14 +113,24 @@ export async function updateTestCase(
 }
 
 export async function deleteTestCase(id: string): Promise<void> {
-  const tc = await getDB().testCases.get(id);
+  const db = getDB();
+  const tc = await db.testCases.get(id);
   if (!tc) return;
-  await getDB().testCases.delete(id);
+  const referencedRuns = await db.evalRuns.where("testSuiteId").equals(tc.testSuiteId).count();
+  if (referencedRuns > 0) {
+    throw new Error(`该用例所属测试集已被 ${referencedRuns} 个评估任务引用，不能删除用例`);
+  }
+  await db.testCases.delete(id);
   await touchTestSuite(tc.testSuiteId);
 }
 
 export async function clearTestCases(testSuiteId: string): Promise<number> {
-  const count = await getDB()
+  const db = getDB();
+  const referencedRuns = await db.evalRuns.where("testSuiteId").equals(testSuiteId).count();
+  if (referencedRuns > 0) {
+    throw new Error(`该测试集已被 ${referencedRuns} 个评估任务引用，不能清空用例`);
+  }
+  const count = await db
     .testCases.where("testSuiteId")
     .equals(testSuiteId)
     .delete();
